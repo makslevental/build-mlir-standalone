@@ -1,0 +1,195 @@
+#  Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+#  See https://llvm.org/LICENSE.txt for license information.
+#  SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#  Copyright (c) 2024.
+
+name: "Build LLVM and MLIR"
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  # A PR number if a pull request and otherwise the commit hash. This cancels
+  # queued and in-progress runs for the same PR (presubmit) or commit
+  # (postsubmit). The workflow name is prepended to avoid conflicts between
+  # different workflows.
+  group: ${{ github.workflow }}-${{ github.event.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "manylinux_x86_64"
+            runs-on: "ubuntu-22.04"
+            container: "quay.io/pypa/manylinux_2_28_x86_64"
+            os: "almalinux"
+            arch: x86_64
+          - name: "manylinux_aarch64"
+            runs-on: "ubuntu-22.04-arm"
+            container: "quay.io/pypa/manylinux_2_34_aarch64"
+            os: "almalinux"
+            arch: aarch64
+          - name: "windows_x86_64"
+            runs-on: "windows-2022"
+            os: "windows"
+            arch: x86_64
+          - name: "macos_arm64"
+            runs-on: "macos-14"
+            os: "macos"
+            arch: arm64
+          - name: "macos_x86_64"
+            runs-on: "macos-13"
+            os: "macos"
+            arch: x86_64
+
+    runs-on: ${{ matrix.runs-on }}
+
+    name: build-llvm-mlir ${{ matrix.name }}
+
+    defaults:
+      run:
+        shell: bash
+
+    permissions:
+      id-token: write
+      contents: write
+
+    env:
+      # either the PR number or `branch-N` where N always increments
+      cache-key: "llvm_mlir_${{ matrix.name }}_clang_${{ format('{0}-{1}', github.ref_name, github.run_number) }}"
+
+    container:
+      image: ${{ matrix.container }}
+      volumes:
+        - /:/ghhost
+      options: --privileged --pid=host --ipc=host
+      env:
+        AGENT_TOOLSDIRECTORY: ${{ env.AGENT_TOOLSDIRECTORY }}
+        GH_HOST_DIR: "/ghhost"
+
+    steps:
+      - name: "Check out repository"
+        uses: actions/checkout@v4.2.2
+        with:
+          submodules: true
+
+      - name: "Setup base"
+        uses: ./.github/actions/setup_base
+        id: setup_base
+        with:
+          cache-key: ${{ env.cache-key }}
+          restore-key: "llvm_mlir_${{ matrix.name }}_clang"
+          os: ${{ matrix.os }}
+          arch: ${{ matrix.arch }}
+          container: ${{ matrix.container }}
+          runs-on: ${{ matrix.runs-on }}
+
+      - name: "Build LLVM"
+        id: build-llvm
+        run: |
+          
+          export LLVM_SOURCE_DIR="$PWD/llvm-project"
+          echo LLVM_SOURCE_DIR="$LLVM_SOURCE_DIR" >> "$GITHUB_OUTPUT"
+          export LLVM_BUILD_DIR="$PWD/llvm-build"
+          export LLVM_INSTALL_DIR="$PWD/llvm-install"
+          echo LLVM_INSTALL_DIR="$LLVM_INSTALL_DIR" >> "$GITHUB_OUTPUT"
+          
+          ccache -z
+          
+          cmake_options=(
+            -GNinja
+            -S "$LLVM_SOURCE_DIR/llvm"
+            -B "$LLVM_BUILD_DIR"
+            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_INSTALL_PREFIX="$LLVM_INSTALL_DIR"
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+            -DLLVM_CCACHE_BUILD=ON
+            -DLLVM_OPTIMIZED_TABLEGEN=ON
+            -DLLVM_BUILD_UTILS=ON
+            -DLLVM_INSTALL_UTILS=ON
+            -DLLVM_INCLUDE_UTILS=ON
+            -DLLVM_BUILD_EXAMPLES=ON
+            -DLLVM_TARGETS_TO_BUILD=host
+            -DLLVM_INCLUDE_EXAMPLES=ON
+          )          
+          
+          cmake "${cmake_options[@]}"
+          cmake --build "${LLVM_BUILD_DIR}" --target install
+          
+          rm -rf "$LLVM_BUILD_DIR"
+          
+          ccache -s
+
+      - name: "Build MLIR"
+        id: build-mlir
+        run: |
+          
+          export MLIR_SOURCE_DIR="${{ steps.build-llvm.outputs.LLVM_SOURCE_DIR }}/mlir"
+          export MLIR_BUILD_DIR="$PWD/mlir-build"
+          export MLIR_INSTALL_DIR="$PWD/mlir-install"
+          export LLVM_INSTALL_DIR="${{ steps.build-llvm.outputs.LLVM_INSTALL_DIR }}"
+          
+          ccache -z
+          
+          $python3_command -m venv venv
+          . venv/bin/activate
+          pip install -r "$MLIR_SOURCE_DIR/python/requirements.txt"
+          pip install lit
+          
+          cmake_options=(
+            -GNinja
+            -S "$MLIR_SOURCE_DIR"
+            -B "$MLIR_BUILD_DIR"
+            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_PREFIX_PATH="$LLVM_INSTALL_DIR"
+            -DCMAKE_INSTALL_PREFIX="$MLIR_INSTALL_DIR"
+            -DMLIR_INCLUDE_TESTS=ON
+            -DMLIR_ENABLE_EXECUTION_ENGINE=ON
+            -DMLIR_ENABLE_BINDINGS_PYTHON=ON
+            -DMLIR_INCLUDE_INTEGRATION_TESTS=ON
+            -DPython3_EXECUTABLE=$(which python)
+            -DLLVM_EXTERNAL_LIT="$(which lit)"
+          )          
+          
+          cmake "${cmake_options[@]}"
+          cmake --build "$MLIR_BUILD_DIR" --target check-mlir
+          
+          if [ "${{ matrix.arch }}" == "aarch64"] || [ "${{ matrix.arch }}" == "arm64"]; then
+            # see 
+            MLIR_RUNNER="$MLIR_BUILD_DIR/bin/mlir-runner"
+          fi
+          
+          cmake --build "$MLIR_BUILD_DIR" --target install
+          
+          ccache -s
+          
+          rm -rf "$MLIR_BUILD_DIR"
+
+      - name: Upload LLVM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: llvm_${{ matrix.name }}_artifact
+          path: llvm-install
+          if-no-files-found: warn
+
+      - name: Upload MLIR artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlir_${{ matrix.name }}_artifact
+          path: mlir-install
+          if-no-files-found: warn
+
+      - name: "Save cache"
+        uses: actions/cache/save@v3
+        if: (!cancelled())
+        with:
+          path: ${{ steps.setup_base.outputs.cache-dir }}
+          key: ${{ env.cache-key }}

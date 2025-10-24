@@ -1,0 +1,229 @@
+#  Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+#  See https://llvm.org/LICENSE.txt for license information.
+#  SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#  Copyright (c) 2024.
+
+name: "Setup base"
+description: ''
+
+inputs:
+  os:
+    required: true
+    description: ''
+  arch:
+    required: true
+    description: ''
+  container:
+    required: false
+    description: ''
+  runs-on:
+    required: false
+    description: ''
+  cache-key:
+    required: true
+    description: ''
+  restore-key:
+    required: true
+    description: ''
+  python-version:
+    required: false
+    description: ''
+    default: '3.12'
+
+outputs:
+  cache-dir:
+    description: ''
+    value: ${{ steps.canonicalize-cache-dir.outputs.cache-dir }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Set unified TZ"
+      uses: szenius/set-timezone@v2.0
+      with:
+        # this is an arbitrary choice
+        timezoneLinux: "Asia/Singapore"
+        timezoneMacos: "Asia/Singapore"
+        timezoneWindows: "Singapore Standard Time"
+
+    - name: "Clean ubuntu"
+      if: (inputs.container && startsWith(inputs.runs-on, 'ubuntu'))
+      shell: bash
+      run: |
+        
+        echo "before"
+        df -h
+        rm -rf $GH_HOST_DIR/usr/local/lib/android
+        rm -rf $GH_HOST_DIR/usr/share/dotnet
+        rm -rf $GH_HOST_DIR/opt/ghc
+        rm -rf $GH_HOST_DIR/$AGENT_TOOLSDIRECTORY
+        # i don't know why chroot doesn't work? it should?
+        # chroot /ghhost
+        # apt-get remove -y '^aspnetcore-.*'
+        # apt-get remove -y '^dotnet-.*'
+        # apt-get remove -y '^llvm-.*'
+        # apt-get remove -y 'php.*'
+        # apt-get remove -y '^mongodb-.*'
+        # apt-get remove -y '^mysql-.*'
+        # apt-get remove -y azure-cli google-chrome-stable firefox powershell mono-devel libgl1-mesa-dri
+        # apt-get remove -y google-cloud-sdk || sudo apt-get remove -y google-cloud-cli || true
+        # apt-get autoremove -y
+        # apt-get clean
+        # docker image prune --all --force
+        echo "after"
+        df -h
+
+    # notes for next time i bash my head against this:
+    # 1. github.workspace and $GITHUB_WORKSPACE are different between container actions and non-container actions
+    # 2. action/save-restore claims it expands ~ but that's a lie
+    # 3. macos root (/) is read only
+    # 4. you have to use windows style paths on windows even though we set shell: bash because
+    #    `with: path: ....` is not executed in our chosen shell (and so findind the dir will fail)
+    # 5. action/save-restore will tell you there's no cache matching the key when the paths differ
+    #    (even if the cache key does exist)
+    # 6. on almalinux8, ccache distribution is very old
+    # 7. action/save-restore needs a subdir in the cached dir (that's why CCACHE_DIR=.container-cache/ccache)
+    - name: "Canonicalize cache dir"
+      id: canonicalize-cache-dir
+      shell: bash
+      run: |
+        if [[ "${{ inputs.os }}" == "almalinux" ]] || [[ "${{ inputs.os }}" == "ubuntu" ]]; then
+          echo "cache-dir=/tmp/.container-cache" >> $GITHUB_OUTPUT
+        elif [[ "${{ inputs.os }}" == "macos" ]]; then
+          echo "cache-dir=/tmp/.container-cache" >> $GITHUB_OUTPUT
+        elif [[ "${{ inputs.os }}" == "windows" ]]; then
+          echo "cache-dir=D:\a\.container-cache" >> $GITHUB_OUTPUT
+        fi
+
+    - name: "Restore cache"
+      uses: actions/cache/restore@v3
+      with:
+        path: ${{ steps.canonicalize-cache-dir.outputs.cache-dir }}
+        key:  ${{ inputs.cache-key }}
+        restore-keys: ${{ inputs.restore-key }}
+
+    - name: "Install OS deps"
+      shell: bash
+      run: |
+        
+        if [[ "${{ inputs.os }}" == "almalinux" ]]; then
+          dnf install -y epel-release 
+          dnf install -y sudo ncurses-compat-libs tmate python3-pip git
+        
+          # install ccache
+          if [[ "${{ inputs.arch }}" == "x86_64" ]]; then
+            curl -sLO https://github.com/ccache/ccache/releases/download/v4.10.2/ccache-4.10.2-linux-x86_64.tar.xz
+            tar -xf ccache-4.10.2-linux-x86_64.tar.xz
+            pushd ccache-4.10.2-linux-x86_64 && make install && popd
+          elif [[ "${{ inputs.arch }}" == "aarch64" ]]; then
+            dnf install -y ccache
+          fi
+        
+          # install gh-cli
+          if [[ "${{ inputs.arch }}" == "x86_64" ]]; then
+            rpm_arch=amd64
+          elif [[ "${{ inputs.arch }}" == "aarch64" ]]; then
+            rpm_arch=arm64
+          fi
+          curl -sLO https://github.com/cli/cli/releases/download/v2.61.0/gh_2.61.0_linux_${rpm_arch}.rpm
+          rpm -i gh_2.61.0_linux_${rpm_arch}.rpm
+        
+          # lol: failed to run git: fatal: detected dubious ownership in repository at '/__w/eudsl/eudsl'
+          git config --global --add safe.directory /__w/eudsl/eudsl
+        elif [[ "${{ inputs.os }}" == macos* ]]; then
+          brew install ccache ninja
+        fi
+
+    - name: "Install Python"
+      uses: actions/setup-python@v4
+      if: ${{ startsWith(inputs.os, 'macos') || startsWith(inputs.os, 'windows') || startsWith(inputs.os, 'ubuntu') }}
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: "Setup compiler/toolchain"
+      uses: aminya/setup-cpp@v1
+      if: ${{ startsWith(inputs.os, 'almalinux') || startsWith(inputs.os, 'ubuntu') || startsWith(inputs.os, 'windows') }}
+      with:
+        # https://github.com/actions/runner-images/issues/12435
+        compiler: ${{ startsWith(inputs.os, 'windows') && 'llvm-19' || 'llvm-18' }}
+        cmake: true
+        ninja: true
+        ccache: ${{ startsWith(inputs.os, 'windows') || startsWith(inputs.os, 'ubuntu') }}
+        vcvarsall: ${{ startsWith(inputs.os, 'windows') }}
+
+    # https://github.com/llvm/llvm-project/issues/86250
+    - name: install DIA SDK
+      if: startsWith(inputs.os, 'windows')
+      shell: bash
+      run: |
+        set -x
+        mkdir -p "C:/Program Files (x86)/Microsoft Visual Studio/2019/Enterprise" || true
+        cp -rv "C:/Program Files/Microsoft Visual Studio/2022/Enterprise/DIA SDK" "C:/Program Files (x86)/Microsoft Visual Studio/2019/Enterprise/DIA SDK"
+
+    - name: "Set CC/CXX"
+      shell: bash
+      run: |
+        if [[ "${{ inputs.os }}" == "almalinux" ]]; then
+          echo "CC=/github/home/llvm/bin/clang" >> $GITHUB_ENV
+          echo "CXX=/github/home/llvm/bin/clang++" >> $GITHUB_ENV
+        elif [[ "${{ inputs.os }}" == "ubuntu" ]]; then
+          echo "CC=/usr/lib/llvm-18/bin/clang" >> $GITHUB_ENV
+          echo "CXX=/usr/lib/llvm-18/bin/clang++" >> $GITHUB_ENV
+        elif [[ "${{ inputs.os }}" == "windows" ]]; then
+          echo "CC=/C/Users/runneradmin/llvm/bin/clang-cl.exe" >> $GITHUB_ENV
+          echo "CXX=/C/Users/runneradmin/llvm/bin/clang-cl.exe" >> $GITHUB_ENV
+        elif [[ "${{ inputs.os }}" == "macos" ]]; then
+          echo "CC=/usr/bin/clang" >> $GITHUB_ENV
+          echo "CXX=/usr/bin/clang++" >> $GITHUB_ENV
+        fi
+
+    - name: "Python deps"
+      shell: bash
+      run: |
+        python3_command=""
+        if (command -v python${{ inputs.python-version }} &> /dev/null); then
+          python3_command="python${{ inputs.python-version }}"
+        elif (command -v python3 &> /dev/null); then
+          python3_command="python3"
+        elif (command -v python &> /dev/null); then
+          python3_command="python"
+        fi 
+        echo "python3_command=$python3_command" >> $GITHUB_ENV
+
+    - name: "Set CMake/ccache env vars"
+      shell: bash
+      run: |
+        export CCACHE_DIR="${{ steps.canonicalize-cache-dir.outputs.cache-dir }}/ccache"
+        mkdir -p $CCACHE_DIR
+        echo "CCACHE_DIR=$CCACHE_DIR" >> $GITHUB_ENV
+        echo "CCACHE_COMPILERCHECK=string:$($CC --version | head -n 1)" >> $GITHUB_ENV
+        echo $CCACHE_COMPILERCHECK
+        echo "CCACHE_MAXSIZE=700M" >> $GITHUB_ENV
+        echo "CCACHE_SLOPPINESS=include_file_ctime,include_file_mtime,time_macros" >> $GITHUB_ENV
+        echo "CCACHE_CPP2=true" >> $GITHUB_ENV
+        echo "CCACHE_NOHASHDIR=true" >> $GITHUB_ENV
+        echo "CCACHE_UMASK=002" >> $GITHUB_ENV
+        if [[ "${{ inputs.os }}" == "almalinux" ]] || [[ "${{ inputs.os }}" == "ubuntu" ]] || [[ "${{ inputs.os }}" == "macos" ]]; then
+          echo "CCACHE_LOGFILE=/tmp/ccache.log" >> $GITHUB_ENV
+        elif [[ "${{ inputs.os }}" == "windows" ]]; then
+          echo "CCACHE_LOGFILE=D:\a\ccache.log" >> $GITHUB_ENV
+        fi
+        
+        ccache -z
+
+        echo "CMAKE_GENERATOR=Ninja" >> $GITHUB_ENV
+        echo "CMAKE_MAKE_PROGRAM=Ninja" >> $GITHUB_ENV
+        echo "CMAKE_C_COMPILER_LAUNCHER=ccache" >> $GITHUB_ENV
+        echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache" >> $GITHUB_ENV
+        echo "Python3_EXECUTABLE=$(which $python3_command)" >> $GITHUB_ENV
+        
+        if [[ "${{ inputs.os }}" == "ubuntu" ]] || [[ "${{ inputs.os }}" == "windows" ]]; then
+          echo "CMAKE_EXE_LINKER_FLAGS_INIT=-fuse-ld=lld" >> $GITHUB_ENV
+          echo "CMAKE_SHARED_LINKER_FLAGS_INIT=-fuse-ld=lld" >> $GITHUB_ENV
+          echo "CMAKE_MODULE_LINKER_FLAGS_INIT=-fuse-ld=lld" >> $GITHUB_ENV
+        fi
+        
+        if [[ "${{ matrix.os }}" == "macos" ]]; then
+          echo MACOSX_DEPLOYMENT_TARGET=11.0 >> $GITHUB_ENV
+          echo CMAKE_OSX_DEPLOYMENT_TARGET=11.0 >> $GITHUB_ENV
+        fi
