@@ -105,21 +105,16 @@ jobs:
           ccache -z
           
           cmake_options=(
-            -GNinja
+            -G Ninja
             -S "$LLVM_SOURCE_DIR/llvm"
             -B "$LLVM_BUILD_DIR"
-            -DCMAKE_BUILD_TYPE=Release
             -DCMAKE_INSTALL_PREFIX="$LLVM_INSTALL_DIR"
-            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
-            -DLLVM_CCACHE_BUILD=ON
-            -DLLVM_OPTIMIZED_TABLEGEN=ON
-            -DLLVM_BUILD_UTILS=ON
-            -DLLVM_INSTALL_UTILS=ON
-            -DLLVM_INCLUDE_UTILS=ON
-            -DLLVM_BUILD_EXAMPLES=ON
+            -DCMAKE_BUILD_TYPE=Release
             -DLLVM_TARGETS_TO_BUILD=host
-            -DLLVM_INCLUDE_EXAMPLES=ON
-          )          
+            -DLLVM_INSTALL_UTILS=ON
+            -DLLVM_LINK_LLVM_DYLIB=ON
+            -DLLVM_INCLUDE_TESTS=OFF
+          )
           
           cmake "${cmake_options[@]}"
           cmake --build "${LLVM_BUILD_DIR}" --target install
@@ -145,19 +140,15 @@ jobs:
           pip install lit
           
           cmake_options=(
-            -GNinja
+            -G Ninja
             -S "$MLIR_SOURCE_DIR"
             -B "$MLIR_BUILD_DIR"
-            -DCMAKE_BUILD_TYPE=Release
-            -DCMAKE_PREFIX_PATH="$LLVM_INSTALL_DIR"
             -DCMAKE_INSTALL_PREFIX="$MLIR_INSTALL_DIR"
-            -DMLIR_INCLUDE_TESTS=ON
-            -DMLIR_ENABLE_EXECUTION_ENGINE=ON
-            -DMLIR_ENABLE_BINDINGS_PYTHON=ON
-            -DMLIR_INCLUDE_INTEGRATION_TESTS=ON
-            -DPython3_EXECUTABLE=$(which python)
-            -DLLVM_EXTERNAL_LIT="$(which lit)"
-          )          
+            -DLLVM_ROOT="$LLVM_INSTALL_DIR"
+            -DCMAKE_BUILD_TYPE=Release
+            -DLLVM_TARGETS_TO_BUILD=host
+            -DMLIR_INCLUDE_TESTS=OFF
+          )
           
           cmake "${cmake_options[@]}"
           cmake --build "$MLIR_BUILD_DIR" --target check-mlir
