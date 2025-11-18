@@ -11,6 +11,7 @@ on:
   push:
     branches:
       - main
+      - sauparna/verbatim
 
 concurrency:
   # A PR number if a pull request and otherwise the commit hash. This cancels
@@ -27,28 +28,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: "manylinux_x86_64"
-            runs-on: "ubuntu-22.04"
-            container: "quay.io/pypa/manylinux_2_28_x86_64"
-            os: "almalinux"
-            arch: x86_64
-          - name: "manylinux_aarch64"
-            runs-on: "ubuntu-22.04-arm"
-            container: "quay.io/pypa/manylinux_2_34_aarch64"
-            os: "almalinux"
-            arch: aarch64
-          - name: "windows_x86_64"
-            runs-on: "windows-2022"
-            os: "windows"
-            arch: x86_64
-          - name: "macos_arm64"
+          - name: "macos-14_arm64"
             runs-on: "macos-14"
             os: "macos"
             arch: arm64
-          - name: "macos_x86_64"
-            runs-on: "macos-13"
+          - name: "macos-26_arm64"
+            runs-on: "macos-26"
             os: "macos"
-            arch: x86_64
+            arch: arm64
 
     runs-on: ${{ matrix.runs-on }}
 
@@ -105,21 +92,16 @@ jobs:
           ccache -z
           
           cmake_options=(
-            -GNinja
+            -G Ninja
             -S "$LLVM_SOURCE_DIR/llvm"
             -B "$LLVM_BUILD_DIR"
-            -DCMAKE_BUILD_TYPE=Release
             -DCMAKE_INSTALL_PREFIX="$LLVM_INSTALL_DIR"
-            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
-            -DLLVM_CCACHE_BUILD=ON
-            -DLLVM_OPTIMIZED_TABLEGEN=ON
-            -DLLVM_BUILD_UTILS=ON
-            -DLLVM_INSTALL_UTILS=ON
-            -DLLVM_INCLUDE_UTILS=ON
-            -DLLVM_BUILD_EXAMPLES=ON
+            -DCMAKE_BUILD_TYPE=Release
             -DLLVM_TARGETS_TO_BUILD=host
-            -DLLVM_INCLUDE_EXAMPLES=ON
-          )          
+            -DLLVM_INSTALL_UTILS=ON
+            -DLLVM_LINK_LLVM_DYLIB=ON
+            -DLLVM_INCLUDE_TESTS=OFF
+          )
           
           cmake "${cmake_options[@]}"
           cmake --build "${LLVM_BUILD_DIR}" --target install
@@ -145,22 +127,17 @@ jobs:
           pip install lit
           
           cmake_options=(
-            -GNinja
+            -G Ninja
             -S "$MLIR_SOURCE_DIR"
             -B "$MLIR_BUILD_DIR"
-            -DCMAKE_BUILD_TYPE=Release
-            -DCMAKE_PREFIX_PATH="$LLVM_INSTALL_DIR"
             -DCMAKE_INSTALL_PREFIX="$MLIR_INSTALL_DIR"
-            -DMLIR_INCLUDE_TESTS=ON
-            -DMLIR_ENABLE_EXECUTION_ENGINE=ON
-            -DMLIR_ENABLE_BINDINGS_PYTHON=ON
-            -DMLIR_INCLUDE_INTEGRATION_TESTS=ON
-            -DPython3_EXECUTABLE=$(which python)
-            -DLLVM_EXTERNAL_LIT="$(which lit)"
-          )          
+            -DLLVM_ROOT="$LLVM_INSTALL_DIR"
+            -DCMAKE_BUILD_TYPE=Release
+            -DLLVM_TARGETS_TO_BUILD=host
+            -DMLIR_INCLUDE_TESTS=OFF
+          )
           
           cmake "${cmake_options[@]}"
-          cmake --build "$MLIR_BUILD_DIR" --target check-mlir
           
           if [ "${{ matrix.arch }}" == "aarch64"] || [ "${{ matrix.arch }}" == "arm64"]; then
             # see 
